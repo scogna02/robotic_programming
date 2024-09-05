@@ -2,20 +2,23 @@
 #include "/home/gabrielescognamiglio/catkin_ws/src/interactive_planner/include/interactive_planner/grid_map.h"
 #include <nav_msgs/OccupancyGrid.h>
 #include <nav_msgs/Path.h>
+#include <geometry_msgs/PoseStamped.h>
 #include <opencv2/opencv.hpp>
 #include <string>
 
+enum class SelectionState {
+    WAITING_FOR_START,
+    WAITING_FOR_GOAL
+};
+
 class GridMapNode {
 public:
-    GridMapNode() : nh_("~") {
+    GridMapNode() : nh_("~"), selection_state_(SelectionState::WAITING_FOR_START) {
         map_pub_ = nh_.advertise<nav_msgs::OccupancyGrid>("map", 1, true);
         path_pub_ = nh_.advertise<nav_msgs::Path>("path", 1, true);
+        goal_sub_ = nh_.subscribe("/move_base_simple/goal", 1, &GridMapNode::goalCallback, this);
 
         nh_.param<std::string>("image_path", image_path_, "");
-        nh_.param<int>("start_x", start_.first, 10);
-        nh_.param<int>("start_y", start_.second, 10);
-        nh_.param<int>("goal_x", goal_.first, 1657);
-        nh_.param<int>("goal_y", goal_.second, 1657);
         nh_.param<double>("publish_rate", publish_rate_, 1.0);
     }
 
@@ -23,12 +26,9 @@ public:
         if (!loadImage()) {
             return false;
         }
-        grid_map_.setStartGoal(start_, goal_);
         occupancy_grid_ = imageToOccupancyGrid(image_);
         grid_map_.setOccupancy(occupancy_grid_);
         grid_map_.computeDistanceMap();
-        path_points_ = grid_map_.findPath();
-        path_message_ = convertVectorToPath(path_points_);
         return true;
     }
 
@@ -45,6 +45,7 @@ private:
     ros::NodeHandle nh_;
     ros::Publisher map_pub_;
     ros::Publisher path_pub_;
+    ros::Subscriber goal_sub_;
     GridMap grid_map_;
     std::string image_path_;
     std::pair<int, int> start_;
@@ -54,6 +55,7 @@ private:
     std::vector<std::pair<int, int>> path_points_;
     nav_msgs::Path path_message_;
     double publish_rate_;
+    SelectionState selection_state_;
 
     bool loadImage() {
         image_ = cv::imread(image_path_, cv::IMREAD_GRAYSCALE);
@@ -64,6 +66,7 @@ private:
         ROS_INFO("Image loaded successfully");
         return true;
     }
+
 
     nav_msgs::OccupancyGrid imageToOccupancyGrid(const cv::Mat& image) {
         nav_msgs::OccupancyGrid grid;
@@ -100,12 +103,38 @@ private:
         return path_msg;
     }
 
+
     void publishMapAndPath() {
         occupancy_grid_.header.stamp = ros::Time::now();
         map_pub_.publish(occupancy_grid_);
 
-        path_message_.header.stamp = ros::Time::now();
-        path_pub_.publish(path_message_);
+        if (!path_message_.poses.empty()) {
+            path_message_.header.stamp = ros::Time::now();
+            path_pub_.publish(path_message_);
+        }
+    }
+
+    void goalCallback(const geometry_msgs::PoseStamped::ConstPtr& msg) {
+        int x = static_cast<int>(msg->pose.position.x);
+        int y = static_cast<int>(msg->pose.position.y);
+
+        if (selection_state_ == SelectionState::WAITING_FOR_START) {
+            start_ = {x, y};
+            ROS_INFO("Start point set to (%d, %d)", x, y);
+            selection_state_ = SelectionState::WAITING_FOR_GOAL;
+        } else {
+            goal_ = {x, y};
+            ROS_INFO("Goal point set to (%d, %d)", x, y);
+            selection_state_ = SelectionState::WAITING_FOR_START;
+            calculatePath();
+        }
+    }
+
+    void calculatePath() {
+        grid_map_.setStartGoal(start_, goal_);
+        path_points_ = grid_map_.findPath();
+        path_message_ = convertVectorToPath(path_points_);
+        ROS_INFO("Path recalculated");
     }
 };
 
