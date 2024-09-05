@@ -1,8 +1,0 @@
-<launch>
-  <node name="interactive_planner" pkg="interactive_planner" type="node_gridmap" output="screen">
-    <param name="image_path" value="$(find interactive_planner)/maps/map.jpg" />
-    <param name="publish_rate" value="10.0" />
-  </node>
-  
-  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find interactive_planner)/rviz/config.rviz" />
-</launch>
