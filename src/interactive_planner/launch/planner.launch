@@ -1,0 +1,10 @@
+<launch>
+  <node name="interactive_planner" pkg="interactive_planner" type="node_gridmap" output="screen">
+    <param name="image_path" value="/home/gabrielescognamiglio/catkin_ws/src/interactive_planner/maps/map.jpg" />
+    <param name="start_x" value="10" />
+    <param name="start_y" value="10" />
+    <param name="goal_x" value="1657" />
+    <param name="goal_y" value="1657" />
+    <param name="publish_rate" value="1.0" />
+  </node>
+</launch>
