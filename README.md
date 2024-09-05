@@ -1,4 +1,4 @@
-# Interactive Planner ROS Package
+# Interactive Planner ROS
 
 This package implements an interactive path planner using ROS. It allows users to select start and goal points on a map in RViz, and automatically calculates and displays the path between these points.
 
