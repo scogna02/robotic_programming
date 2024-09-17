@@ -7,16 +7,20 @@
 
 namespace fs = boost::filesystem;
 
+// Constructor for GridMap class
 GridMap::GridMap() : rows(0), cols(0), minDist(0), maxDist(0) {
     std::cout << "Initializing the GridMap..." << std::endl;
 }
 
+// Load an image from a specified folder
 void GridMap::loadImage(const fs::path& folder) {
+    // Find an image file in the given folder
     auto imagePath = findImage(folder);
     if (imagePath.empty()) {
         throw std::runtime_error("No image found in the specified folder");
     }
 
+    // Load the image in grayscale
     cv::Mat loadedImage = cv::imread(imagePath.string(), cv::IMREAD_GRAYSCALE);
     if (loadedImage.empty()) {
         throw std::runtime_error("Error loading the image");
@@ -26,6 +30,7 @@ void GridMap::loadImage(const fs::path& folder) {
     processImage(loadedImage);
 }
 
+// Find an image file in the given folder
 fs::path GridMap::findImage(const fs::path& folder) {
     const std::vector<std::string> validExtensions = {".png", ".jpeg", ".jpg", ".bmp", ".gif"};
     for (const auto& entry : fs::directory_iterator(folder)) {
@@ -39,6 +44,7 @@ fs::path GridMap::findImage(const fs::path& folder) {
     return {};
 }
 
+// Process the loaded image and convert it to a binary grid
 void GridMap::processImage(const cv::Mat& image) {
     rows = image.rows;
     cols = image.cols;
@@ -46,11 +52,13 @@ void GridMap::processImage(const cv::Mat& image) {
 
     for (int i = 0; i < rows; ++i) {
         for (int j = 0; j < cols; ++j) {
+            // Threshold the image: white (>230) becomes 255, everything else becomes 0
             gridMapArray[i * cols + j] = (image.at<uchar>(i, j) > 230) ? 255 : 0;
         }
     }
 }
 
+// Set the start and goal positions for path planning
 void GridMap::setStartGoal(const std::pair<int, int>& start, const std::pair<int, int>& goal) {
     this->start = start;
     this->goal = goal;
@@ -58,12 +66,14 @@ void GridMap::setStartGoal(const std::pair<int, int>& start, const std::pair<int
     std::cout << "Goal: (" << goal.first << ", " << goal.second << ")" << std::endl;
 }
 
-void GridMap::setOccupancy(const nav_msgs::OccupancyGrid& grid) {
+// Set the occupancy grid from a ROS OccupancyGrid message
+void GridMap::setOccupancy(const nav_msgs::OccupancyGrid& grid) { 
     gridmapocc = grid;
     rows = grid.info.height;
     cols = grid.info.width;
 }
 
+// Compute the distance map using OpenCV's distanceTransform
 void GridMap::computeDistanceMap() {
     cv::Mat gridMapCV(rows, cols, CV_8UC1);
     for (int i = 0; i < rows; ++i) {
@@ -84,18 +94,22 @@ void GridMap::computeDistanceMap() {
     }
 }
 
+// Calculate the cost of moving to a cell based on its distance from obstacles
 inline int GridMap::actionCost(int x, int y) const {
     return std::exp(maxDist - distanceMap(x, y)) + 1;
 }
 
+// Check if a given cell is valid (within bounds and not occupied)
 inline bool GridMap::isValid(int x, int y) const {
     return x >= 0 && x < cols && y >= 0 && y < rows && gridmapocc.data[y * cols + x] == 0;
 }
 
+// Calculate the heuristic cost (Manhattan distance) to the goal
 inline int GridMap::heuristic(int x, int y) const {
     return std::abs(x - goal.first) + std::abs(y - goal.second);
 }
 
+// Check if both start and goal positions are valid
 bool GridMap::checkValidStartAndGoal() const {
     auto checkPosition = [this](const std::pair<int, int>& pos, const char* name) {
         if (pos.first < 0 || pos.first >= cols || pos.second < 0 || pos.second >= rows ||
@@ -110,6 +124,7 @@ bool GridMap::checkValidStartAndGoal() const {
     return checkPosition(start, "Start") && checkPosition(goal, "Goal");
 }
 
+// Find a path from start to goal using A* algorithm
 std::vector<std::pair<int, int>> GridMap::findPath() {
     if (!checkValidStartAndGoal()) {
         return {};
@@ -162,6 +177,7 @@ std::vector<std::pair<int, int>> GridMap::findPath() {
     return {};
 }
 
+// Reconstruct the path from start to goal using the parent information
 std::vector<std::pair<int, int>> GridMap::reconstructPath(const std::vector<std::vector<std::pair<int, int>>>& parent) const {
     std::vector<std::pair<int, int>> path;
     auto current = goal;
