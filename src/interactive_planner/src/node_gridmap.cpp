@@ -1,12 +1,11 @@
 #include <ros/ros.h>
 #include "/home/gabrielescognamiglio/catkin_ws/src/interactive_planner/include/interactive_planner/grid_map.h"
 #include <nav_msgs/OccupancyGrid.h>
+#include <nav_msgs/MapMetaData.h>
 #include <nav_msgs/Path.h>
 #include <geometry_msgs/PoseStamped.h>
-#include <opencv2/opencv.hpp>
 #include <string>
 
-// Enum to keep track of the current selection state
 enum class SelectionState {
     WAITING_FOR_START,
     WAITING_FOR_GOAL
@@ -14,32 +13,22 @@ enum class SelectionState {
 
 class GridMapNode {
 public:
-    // Constructor: initializes ROS node, publishers, subscribers, and parameters
     GridMapNode() : nh_("~"), selection_state_(SelectionState::WAITING_FOR_START) {
-        map_pub_ = nh_.advertise<nav_msgs::OccupancyGrid>("map", 1, true);
         path_pub_ = nh_.advertise<nav_msgs::Path>("path", 1, true);
         goal_sub_ = nh_.subscribe("/move_base_simple/goal", 1, &GridMapNode::goalCallback, this);
+        map_sub_ = nh_.subscribe("/map", 1, &GridMapNode::mapCallback, this);
+        map_metadata_sub_ = nh_.subscribe("/map_metadata", 1, &GridMapNode::mapMetadataCallback, this);
 
-        nh_.param<std::string>("image_path", image_path_, "");
         nh_.param<double>("publish_rate", publish_rate_, 1.0);
     }
 
-    // Initialize the node: load image, create occupancy grid, and compute distance map
-    bool initialize() {
-        if (!loadImage()) {
-            return false;
-        }
-        occupancy_grid_ = imageToOccupancyGrid(image_);
-        grid_map_.setOccupancy(occupancy_grid_);
-        grid_map_.computeDistanceMap();
-        return true;
-    }
-
-    // Main loop: publish map and path at specified rate
     void run() {
         ros::Rate rate(publish_rate_);
         while (ros::ok()) {
-            publishMapAndPath();
+            if (!path_message_.poses.empty()) {
+                path_message_.header.stamp = ros::Time::now();
+                path_pub_.publish(path_message_);
+            }
             rate.sleep();
             ros::spinOnce();
         }
@@ -47,52 +36,29 @@ public:
 
 private:
     ros::NodeHandle nh_;
-    ros::Publisher map_pub_;
     ros::Publisher path_pub_;
     ros::Subscriber goal_sub_;
+    ros::Subscriber map_sub_;
+    ros::Subscriber map_metadata_sub_;
     GridMap grid_map_;
-    std::string image_path_;
     std::pair<int, int> start_;
     std::pair<int, int> goal_;
-    cv::Mat image_;
-    nav_msgs::OccupancyGrid occupancy_grid_;
-    std::vector<std::pair<int, int>> path_points_;
     nav_msgs::Path path_message_;
     double publish_rate_;
+    double resolution_;
     SelectionState selection_state_;
 
-    // Load image from specified path
-    bool loadImage() {
-        image_ = cv::imread(image_path_, cv::IMREAD_GRAYSCALE);
-        if (image_.empty()) {
-            ROS_ERROR_STREAM("Failed to load image: " << image_path_);
-            return false;
-        }
-        ROS_INFO("Image loaded successfully");
-        return true;
+    void mapCallback(const nav_msgs::OccupancyGrid::ConstPtr& map) {
+        grid_map_.setOccupancy(*map);
+        grid_map_.computeDistanceMap();
+        ROS_INFO("Received map and updated GridMap");
     }
 
-    // Convert OpenCV image to ROS OccupancyGrid message
-    nav_msgs::OccupancyGrid imageToOccupancyGrid(const cv::Mat& image) {
-        nav_msgs::OccupancyGrid grid;
-        grid.header.frame_id = "map";
-        grid.info.width = image.cols;
-        grid.info.height = image.rows;
-        grid.info.resolution = 1.0;
-        grid.info.origin.position.x = 0.0;
-        grid.info.origin.position.y = 0.0;
-        grid.info.origin.orientation.w = 1.0;
-        grid.data.reserve(image.total());
-
-        for (int i = 0; i < image.rows; ++i) {
-            for (int j = 0; j < image.cols; ++j) {
-                grid.data.push_back(image.at<uchar>(i, j) == 255 ? 0 : 100);
-            }
-        }
-        return grid;
+    void mapMetadataCallback(const nav_msgs::MapMetaData::ConstPtr& metadata) {
+        resolution_ = metadata->resolution;
+        ROS_INFO("Received map metadata. Resolution: %f", resolution_);
     }
 
-    // Convert vector of points to ROS Path message
     nav_msgs::Path convertVectorToPath(const std::vector<std::pair<int, int>>& path) {
         nav_msgs::Path path_msg;
         path_msg.header.frame_id = "map";
@@ -101,49 +67,56 @@ private:
         for (const auto& point : path) {
             geometry_msgs::PoseStamped pose;
             pose.header.frame_id = "map";
-            pose.pose.position.x = point.first;
-            pose.pose.position.y = point.second;
+            pose.pose.position = grid2world(point.first, point.second);
             pose.pose.orientation.w = 1.0;
             path_msg.poses.push_back(pose);
         }
         return path_msg;
     }
 
-    // Publish occupancy grid and path
-    void publishMapAndPath() {
-        occupancy_grid_.header.stamp = ros::Time::now();
-        map_pub_.publish(occupancy_grid_);
-
-        if (!path_message_.poses.empty()) {
-            path_message_.header.stamp = ros::Time::now();
-            path_pub_.publish(path_message_);
-        }
-    }
-
-    // Callback for goal selection
     void goalCallback(const geometry_msgs::PoseStamped::ConstPtr& msg) {
-        int x = static_cast<int>(msg->pose.position.x);
-        int y = static_cast<int>(msg->pose.position.y);
+        auto grid_pos = world2grid(msg->pose.position);
+        int x = grid_pos.first;
+        int y = grid_pos.second;
 
         if (selection_state_ == SelectionState::WAITING_FOR_START) {
             start_ = {x, y};
-            ROS_INFO("Start point set to (%d, %d)", x, y);
             selection_state_ = SelectionState::WAITING_FOR_GOAL;
+            ROS_INFO("Start point set to grid coordinates: (%d, %d)", x, y);
         } else {
             goal_ = {x, y};
-            ROS_INFO("Goal point set to (%d, %d)", x, y);
             selection_state_ = SelectionState::WAITING_FOR_START;
+            ROS_INFO("Goal point set to grid coordinates: (%d, %d)", x, y);
             calculatePath();
         }
     }
 
-    // Calculate path using GridMap
     void calculatePath() {
         grid_map_.setStartGoal(start_, goal_);
-        path_points_ = grid_map_.findPath();
-        path_message_ = convertVectorToPath(path_points_);
-        ROS_INFO("Path recalculated");
+        auto path_points = grid_map_.findPath();
+        path_message_ = convertVectorToPath(path_points);
+        ROS_INFO("Path calculated with %zu points", path_message_.poses.size());
+    }
+
+    std::pair<int, int> world2grid(const geometry_msgs::Point& position) {
+        int x = static_cast<int>(position.x / resolution_);
+        int y = static_cast<int>(position.y / resolution_);
+        ROS_INFO("world2grid: (%.2f, %.2f) -> (%d, %d)", position.x, position.y, x, y);
+        return {x, y};
+    }
+
+    geometry_msgs::Point grid2world(int x, int y) {
+        geometry_msgs::Point position;
+        position.x = x * resolution_;
+        position.y = y * resolution_;
+        ROS_INFO("grid2world: (%d, %d) -> (%.2f, %.2f)", x, y, position.x, position.y);
+        return position;
     }
 };
 
 int main(int argc, char** argv) {
+    ros::init(argc, argv, "node_gridmap");
+    GridMapNode node;
+    node.run();
+    return 0;
+}
